@@ -1,313 +1,508 @@
-# Supply Chain Management Salary Analysis using BLS API
-# This script pulls salary data for SCM positions and creates an interactive analysis
+# ==========================================
+# ENHANCED SCM SALARY ANALYSIS WITH 10-YEAR TRENDS
+# Top 20 SCM Positions + Historical Analysis
+# ==========================================
 
 # Load required libraries
 library(blsAPI)
-library(dplyr)
-library(tidyr)
-library(ggplot2)
-library(DT)
+library(tidyverse)
+library(jsonlite)
+library(scales)
+library(openxlsx)
 library(plotly)
-library(readr)
+library(DT)
+library(htmlwidgets)
 
-# Set your BLS API key
-Sys.setenv("BLS_KEY" = "your_bls_api_key_here")
+# Load API key from config file
+source("config.R")
 
-# Define Supply Chain Management occupation codes from BLS OES data
-# These are Standard Occupational Classification (SOC) codes for SCM positions
-scm_occupations <- data.frame(
-  soc_code = c(
-    "11-3071",  # Transportation, Storage, and Distribution Managers
-    "13-1081",  # Logisticians
-    "43-5061",  # Production, Planning, and Expediting Clerks
-    "53-1021",  # First-Line Supervisors of Helpers, Laborers, Material Movers
-    "13-1199",  # Business Operations Specialists, All Other (includes SCM analysts)
-    "11-9199",  # Managers, All Other (includes Supply Chain Managers)
-    "13-1161",  # Market Research Analysts and Marketing Specialists
-    "15-2051",  # Data Scientists (SCM Analytics)
-    "11-3031",  # Financial Managers (Supply Chain Finance)
-    "13-1111",  # Management Analysts (SCM Consultants)
-    "43-1011",  # First-Line Supervisors of Office and Administrative Support
-    "11-1021",  # General and Operations Managers (SCM focus)
-    "13-1121",  # Meeting, Convention, and Event Planners (Supply Chain Events)
-    "15-1211",  # Computer Systems Analysts (SCM Systems)
-    "13-2011",  # Accountants and Auditors (Supply Chain)
-    "41-4011",  # Sales Representatives, Wholesale and Manufacturing
-    "13-1023",  # Purchasing Agents, Except Wholesale, Retail, Farm Products
-    "11-3061",  # Purchasing Managers
-    "13-1022",  # Wholesale and Retail Buyers, Except Farm Products
-    "43-3061"   # Procurement Clerks
-  ),
-  job_title = c(
-    "Transportation, Storage, and Distribution Managers",
-    "Logisticians", 
-    "Production, Planning, and Expediting Clerks",
-    "First-Line Supervisors of Material Movers",
-    "Supply Chain Analysts",
-    "Supply Chain Managers",
-    "Market Research Analysts",
-    "Supply Chain Data Scientists",
-    "Supply Chain Financial Managers", 
-    "Supply Chain Management Consultants",
-    "Supply Chain Supervisors",
-    "Supply Chain Operations Managers",
-    "Supply Chain Event Planners",
-    "Supply Chain Systems Analysts",
-    "Supply Chain Accountants",
-    "Manufacturing Sales Representatives",
-    "Purchasing Agents",
-    "Purchasing Managers",
-    "Wholesale and Retail Buyers",
-    "Procurement Clerks"
-  )
-)
-
-# Function to get salary data from BLS API
-get_bls_salary_data <- function(soc_codes, start_year = 2014, end_year = 2024) {
-  
-  # BLS OES series IDs for national average wages
-  # Format: OEUS + area_code + industry_code + soc_code + data_type
-  # OEUS000000000 = National, All industries
-  # Data types: 04 = Mean annual wage, 03 = Mean hourly wage
-  
-  all_data <- data.frame()
-  
-  for(i in 1:length(soc_codes)) {
-    soc_clean <- gsub("-", "", soc_codes[i])
-    
-    # Create series ID for mean annual wage
-    series_id <- paste0("OEUS000000000", soc_clean, "04")
-    
-    tryCatch({
-      # Get data from BLS API
-      response <- blsAPI(series_id, 
-                        startyear = start_year, 
-                        endyear = end_year,
-                        registrationKey = Sys.getenv("BLS_KEY"))
-      
-      if(length(response$Results$series) > 0) {
-        series_data <- response$Results$series[[1]]$data
-        
-        # Convert to dataframe
-        yearly_data <- data.frame(
-          soc_code = soc_codes[i],
-          year = as.numeric(sapply(series_data, function(x) x$year)),
-          salary = as.numeric(sapply(series_data, function(x) x$value)),
-          stringsAsFactors = FALSE
-        )
-        
-        all_data <- rbind(all_data, yearly_data)
-      }
-      
-      # Add delay to respect API rate limits
-      Sys.sleep(0.5)
-      
-    }, error = function(e) {
-      cat("Error fetching data for SOC code:", soc_codes[i], "\n")
-      cat("Error message:", e$message, "\n")
-    })
-  }
-  
-  return(all_data)
+# Verify API key
+if(Sys.getenv("BLS_KEY") == "") {
+  stop("BLS API key not found. Please check your config.R file.")
 }
 
-# Alternative function using mock data if BLS API fails
-create_mock_salary_data <- function() {
-  set.seed(42)
+# ==========================================
+# EXPANDED CONFIGURATION FOR TOP 20 ANALYSIS
+# ==========================================
+
+# Expanded list of SCM occupations to ensure we get top 20
+scm_occupations_expanded <- list(
+  # ========== SENIOR MANAGEMENT ==========
+  "11-1011" = "Chief Executives (including Supply Chain VPs)",
+  "11-3061" = "Purchasing Managers",
+  "11-3071" = "Transportation, Storage, and Distribution Managers",
+  "11-9199" = "Managers, All Other (includes Operations Managers)",
+  "11-9041" = "Architectural and Engineering Managers",
+  "11-2032" = "Public Relations Managers",
   
-  years <- 2014:2024
-  mock_data <- data.frame()
+  # ========== CORE SCM PROFESSIONAL/ANALYTICAL ==========
+  "13-1081" = "Logisticians",
+  "13-1023" = "Purchasing Agents, Except Wholesale, Retail, and Farm Products",
+  "13-1022" = "Wholesale and Retail Buyers, Except Farm Products",
+  "13-1199" = "Business Operations Specialists, All Other (includes Supply Chain Analysts)",
+  "13-1111" = "Management Analysts (often work on supply chain optimization)",
+  "13-1121" = "Meeting, Convention, and Event Planners",
+  "13-1131" = "Fundraisers",
+  "13-1141" = "Compensation, Benefits, and Job Analysis Specialists",
+  "13-1151" = "Training and Development Specialists",
   
-  base_salaries <- c(
-    "11-3071" = 95000,   # Transportation Managers
-    "13-1081" = 78000,   # Logisticians
-    "43-5061" = 45000,   # Production Planning Clerks
-    "53-1021" = 58000,   # Supervisors Material Movers
-    "13-1199" = 72000,   # SCM Analysts
-    "11-9199" = 105000,  # Supply Chain Managers
-    "13-1161" = 68000,   # Market Research Analysts
-    "15-2051" = 98000,   # Data Scientists
-    "11-3031" = 125000,  # Financial Managers
-    "13-1111" = 87000,   # Management Analysts
-    "43-1011" = 55000,   # Administrative Supervisors
-    "11-1021" = 110000,  # Operations Managers
-    "13-1121" = 52000,   # Event Planners
-    "15-1211" = 89000,   # Systems Analysts
-    "13-2011" = 75000,   # Accountants
-    "41-4011" = 65000,   # Sales Representatives
-    "13-1023" = 62000,   # Purchasing Agents
-    "11-3061" = 118000,  # Purchasing Managers
-    "13-1022" = 58000,   # Buyers
-    "43-3061" = 42000    # Procurement Clerks
+  # ========== TECHNICAL/ENGINEERING ROLES ==========
+  "15-2031" = "Operations Research Analysts",
+  "15-1299" = "Computer Occupations, All Other",
+  "17-2112" = "Industrial Engineers",
+  "17-2141" = "Mechanical Engineers",
+  "17-1011" = "Architects, Except Landscape and Naval",
+  
+  # ========== SPECIALIZED SCM ROLES ==========
+  "13-2051" = "Financial Analysts",
+  "13-2052" = "Personal Financial Advisors",
+  "25-1011" = "Business Teachers, Postsecondary",
+  "19-3051" = "Urban and Regional Planners",
+  
+  # ========== OPERATIONAL/SUPPORT ROLES ==========
+  "43-5011" = "Cargo and Freight Agents",
+  "43-5061" = "Production, Planning, and Expediting Clerks",
+  "43-5071" = "Shipping, Receiving, and Traffic Clerks",
+  "53-1047" = "Traffic Technicians",
+  "43-1011" = "First-Line Supervisors of Office and Administrative Support Workers",
+  "43-4051" = "Customer Service Representatives",
+  
+  # ========== ADDITIONAL SCM-RELATED ==========
+  "13-1021" = "Buyers and Purchasing Agents, Farm Products",
+  "43-5021" = "Couriers and Messengers",
+  "43-5052" = "Postal Service Mail Carriers",
+  "53-7064" = "Packers and Packagers, Hand",
+  "53-7065" = "Stockers and Order Fillers",
+  "53-3032" = "Heavy and Tractor-Trailer Truck Drivers"
+)
+
+# Define years for 10-year analysis
+current_year <- 2024
+historical_years <- seq(current_year - 10, current_year, by = 1)
+cat("Analyzing years:", paste(historical_years, collapse = ", "), "\n")
+
+# ==========================================
+# ENHANCED FUNCTIONS
+# ==========================================
+
+# Function to construct BLS OEWS series IDs
+construct_series_ids <- function(occupation_code) {
+  clean_code <- sprintf("%06s", gsub("-", "", occupation_code))
+  base_id <- paste0("OEUN0000000000000", clean_code)
+  series_ids <- paste0(base_id, c("01", "04", "13"))
+  names(series_ids) <- c("employment", "mean_wage", "median_wage")
+  return(series_ids)
+}
+
+# Enhanced function to get historical data for multiple years
+get_historical_occupation_data <- function(occupation_code, years, max_retries = 3) {
+  series_ids <- construct_series_ids(occupation_code)
+  
+  # API payload for multiple years
+  payload <- list(
+    'seriesid' = as.vector(series_ids),
+    'startyear' = as.character(min(years)),
+    'endyear' = as.character(max(years)),
+    'registrationKey' = Sys.getenv("BLS_KEY")
   )
   
-  for(soc in names(base_salaries)) {
-    for(year in years) {
-      # Simulate salary growth with some variation
-      growth_rate <- runif(1, 0.02, 0.05)  # 2-5% annual growth
-      years_from_base <- year - 2014
+  # Retry logic for API calls
+  for(attempt in 1:max_retries) {
+    tryCatch({
+      response <- blsAPI(payload, api_version = 2)
+      json_data <- fromJSON(response)
       
-      salary <- base_salaries[soc] * (1 + growth_rate)^years_from_base
-      salary <- salary * runif(1, 0.95, 1.05)  # Add some random variation
-      
-      mock_data <- rbind(mock_data, data.frame(
-        soc_code = soc,
-        year = year,
-        salary = round(salary, 0)
-      ))
+      if(json_data$status == "REQUEST_SUCCEEDED") {
+        return(json_data)
+      } else {
+        warning(paste("API request failed for", occupation_code, ":", json_data$message))
+        if(attempt == max_retries) return(NULL)
+      }
+    }, error = function(e) {
+      warning(paste("Error fetching data for", occupation_code, "on attempt", attempt, ":", e$message))
+      if(attempt == max_retries) return(NULL)
+      Sys.sleep(1) # Brief pause before retry
+    })
+  }
+  return(NULL)
+}
+
+# Process historical data
+process_historical_data <- function(api_response, occupation_code, occupation_name, years) {
+  if(is.null(api_response)) {
+    return(create_empty_historical_result(occupation_code, occupation_name, years))
+  }
+  
+  if(is.null(api_response$Results) || is.null(api_response$Results$series)) {
+    return(create_empty_historical_result(occupation_code, occupation_name, years))
+  }
+  
+  series_df <- api_response$Results$series
+  
+  if(!is.data.frame(series_df) || nrow(series_df) == 0) {
+    return(create_empty_historical_result(occupation_code, occupation_name, years))
+  }
+  
+  # Initialize results data frame
+  results_list <- list()
+  
+  # Process each year
+  for(year in years) {
+    year_result <- data.frame(
+      occupation_code = occupation_code,
+      occupation_name = occupation_name,
+      year = year,
+      employment = NA,
+      median_wage = NA,
+      mean_wage = NA,
+      data_available = FALSE
+    )
+    
+    # Process each series type
+    for(i in 1:nrow(series_df)) {
+      tryCatch({
+        series_id <- series_df$seriesID[i]
+        series_data <- series_df$data[[i]]
+        
+        if(!is.null(series_data) && is.data.frame(series_data) && nrow(series_data) > 0) {
+          # Find data for this specific year
+          year_data <- series_data[series_data$year == as.character(year), ]
+          
+          if(nrow(year_data) > 0) {
+            raw_value <- year_data$value[1]
+            
+            if(!is.na(raw_value) && raw_value != "" && raw_value != "-") {
+              value <- as.numeric(raw_value)
+              
+              if(!is.na(value)) {
+                year_result$data_available <- TRUE
+                
+                if(grepl("01$", series_id)) {
+                  year_result$employment <- value
+                } else if(grepl("04$", series_id)) {
+                  year_result$mean_wage <- value
+                } else if(grepl("13$", series_id)) {
+                  year_result$median_wage <- value
+                }
+              }
+            }
+          }
+        }
+      }, error = function(e) {
+        # Continue processing other series
+      })
+    }
+    
+    results_list[[length(results_list) + 1]] <- year_result
+  }
+  
+  return(do.call(rbind, results_list))
+}
+
+# Helper function for empty historical results
+create_empty_historical_result <- function(occupation_code, occupation_name, years) {
+  results <- data.frame(
+    occupation_code = rep(occupation_code, length(years)),
+    occupation_name = rep(occupation_name, length(years)),
+    year = years,
+    employment = rep(NA, length(years)),
+    median_wage = rep(NA, length(years)),
+    mean_wage = rep(NA, length(years)),
+    data_available = rep(FALSE, length(years))
+  )
+  return(results)
+}
+
+# ==========================================
+# HISTORICAL ANALYSIS FUNCTION
+# ==========================================
+
+analyze_historical_trends <- function(occupations_list, years) {
+  cat("Starting historical analysis for", length(occupations_list), "occupations across", length(years), "years...\n")
+  
+  all_historical_results <- list()
+  successful <- 0
+  failed <- 0
+  
+  for(i in seq_along(occupations_list)) {
+    code <- names(occupations_list)[i]
+    name <- occupations_list[[code]]
+    
+    cat(sprintf("(%d/%d) Analyzing historical data: %s - %s\n", i, length(occupations_list), code, name))
+    
+    # Add delay to be respectful to API
+    if(i > 1) Sys.sleep(0.5)
+    
+    # Get historical data
+    raw_data <- get_historical_occupation_data(code, years)
+    processed_data <- process_historical_data(raw_data, code, name, years)
+    
+    all_historical_results[[i]] <- processed_data
+    
+    # Check if any year has data
+    if(any(processed_data$data_available)) {
+      successful <- successful + 1
+      latest_year_data <- processed_data[processed_data$year == max(years), ]
+      if(nrow(latest_year_data) > 0 && latest_year_data$data_available) {
+        cat("  ✓ Success: Latest median =", dollar(latest_year_data$median_wage %||% 0), "\n")
+      } else {
+        cat("  ✓ Success: Historical data available\n")
+      }
+    } else {
+      failed <- failed + 1
+      cat("  ✗ Failed: No historical data available\n")
     }
   }
   
-  return(mock_data)
+  cat(sprintf("\nHistorical analysis complete: %d successful, %d failed\n", successful, failed))
+  
+  # Combine all results
+  final_results <- do.call(rbind, all_historical_results)
+  return(final_results)
 }
 
-# Try to get real data, fall back to mock data if needed
-cat("Attempting to fetch data from BLS API...\n")
+# ==========================================
+# MAIN ANALYSIS EXECUTION
+# ==========================================
 
-salary_data <- tryCatch({
-  get_bls_salary_data(scm_occupations$soc_code)
-}, error = function(e) {
-  cat("BLS API call failed, using mock data for demonstration.\n")
-  cat("Error:", e$message, "\n")
-  create_mock_salary_data()
-})
+cat("Starting enhanced SCM salary analysis with historical trends...\n")
 
-# If no data was retrieved, use mock data
-if(nrow(salary_data) == 0) {
-  cat("No data retrieved from BLS, using mock data.\n")
-  salary_data <- create_mock_salary_data()
+# Get historical data for all occupations
+historical_data <- analyze_historical_trends(scm_occupations_expanded, historical_years)
+
+# ==========================================
+# TOP 20 ANALYSIS
+# ==========================================
+
+# Get the most recent year's data for ranking
+latest_year_data <- historical_data %>%
+  filter(year == current_year, data_available == TRUE) %>%
+  arrange(desc(median_wage))
+
+# Get top 20 SCM positions
+top_20_positions <- head(latest_year_data, 20)
+
+cat("\n", paste(rep("=", 70), collapse=""), "\n")
+cat("TOP 20 HIGHEST PAYING SCM POSITIONS (", current_year, ")\n")
+cat(paste(rep("=", 70), collapse=""), "\n")
+
+for(i in 1:nrow(top_20_positions)) {
+  pos <- top_20_positions[i, ]
+  cat(sprintf("%2d. %s\n", i, pos$occupation_name))
+  cat(sprintf("    Median: %s | Mean: %s | Employment: %s\n", 
+              dollar(pos$median_wage), dollar(pos$mean_wage), comma(pos$employment)))
+  cat(sprintf("    Code: %s\n\n", pos$occupation_code))
 }
 
-# Merge with job titles
-salary_data_complete <- salary_data %>%
-  left_join(scm_occupations, by = "soc_code") %>%
-  filter(!is.na(salary)) %>%
-  arrange(desc(salary))
+# ==========================================
+# 10-YEAR TREND ANALYSIS
+# ==========================================
 
-# Get the most recent year's data for top 20 ranking
-current_year_data <- salary_data_complete %>%
-  filter(year == max(year)) %>%
-  arrange(desc(salary)) %>%
-  slice_head(n = 20) %>%
-  mutate(rank = row_number())
+# Calculate trends for top 20 positions
+top_20_codes <- top_20_positions$occupation_code
 
-# Calculate salary changes over past 10 years
-salary_changes <- salary_data_complete %>%
-  group_by(soc_code, job_title) %>%
-  filter(year %in% c(min(year), max(year))) %>%
-  arrange(year) %>%
+trend_analysis <- historical_data %>%
+  filter(occupation_code %in% top_20_codes, data_available == TRUE) %>%
+  group_by(occupation_code, occupation_name) %>%
   summarise(
-    start_year = min(year),
-    end_year = max(year),
-    start_salary = first(salary),
-    end_salary = last(salary),
-    .groups = "drop"
+    years_with_data = n(),
+    earliest_year = min(year, na.rm = TRUE),
+    latest_year = max(year, na.rm = TRUE),
+    earliest_median = first(median_wage[order(year)], na_rm = TRUE),
+    latest_median = last(median_wage[order(year)], na_rm = TRUE),
+    median_10yr_change = latest_median - earliest_median,
+    median_10yr_pct_change = ((latest_median / earliest_median) - 1) * 100,
+    earliest_employment = first(employment[order(year)], na_rm = TRUE),
+    latest_employment = last(employment[order(year)], na_rm = TRUE),
+    employment_10yr_change = latest_employment - earliest_employment,
+    employment_10yr_pct_change = ((latest_employment / earliest_employment) - 1) * 100,
+    .groups = 'drop'
   ) %>%
-  mutate(
-    salary_change = end_salary - start_salary,
-    percent_change = round(((end_salary - start_salary) / start_salary) * 100, 1),
-    years_span = end_year - start_year,
-    annual_growth_rate = round(((end_salary / start_salary)^(1/years_span) - 1) * 100, 1)
-  )
+  arrange(desc(latest_median))
 
-# Create comprehensive dataset for the interactive table
-final_data <- current_year_data %>%
-  left_join(salary_changes, by = c("soc_code", "job_title")) %>%
+cat("\n10-YEAR SALARY TRENDS FOR TOP 20 SCM POSITIONS:\n")
+cat(paste(rep("=", 70), collapse=""), "\n")
+
+for(i in 1:nrow(trend_analysis)) {
+  trend <- trend_analysis[i, ]
+  cat(sprintf("%2d. %s\n", i, trend$occupation_name))
+  cat(sprintf("    %d Median: %s → %s (%+.1f%% over %d years)\n", 
+              trend$earliest_year, dollar(trend$earliest_median),
+              trend$latest_year, dollar(trend$latest_median),
+              trend$median_10yr_pct_change, 
+              trend$latest_year - trend$earliest_year))
+  cat(sprintf("    Employment: %s → %s (%+.1f%%)\n\n", 
+              comma(trend$earliest_employment), comma(trend$latest_employment),
+              trend$employment_10yr_pct_change))
+}
+
+# ==========================================
+# CREATE COMPREHENSIVE DATASET
+# ==========================================
+
+# Merge current year data with trend analysis
+comprehensive_dataset <- top_20_positions %>%
+  left_join(trend_analysis, by = c("occupation_code", "occupation_name")) %>%
+  mutate(
+    rank = row_number(),
+    occupation_level = case_when(
+      str_detect(occupation_code, "^11-") ~ "Management",
+      str_detect(occupation_code, "^13-1081|^13-1023|^13-1022|^13-1199") ~ "Core SCM Professional",
+      str_detect(occupation_code, "^13-1111|^15-2031|^17-2112") ~ "SCM-Adjacent Analytical", 
+      str_detect(occupation_code, "^43-|^53-") ~ "Operational/Support",
+      TRUE ~ "Other"
+    ),
+    scm_function = case_when(
+      str_detect(occupation_code, "^11-3061|^13-1023|^13-1022") ~ "Procurement & Sourcing",
+      str_detect(occupation_code, "^11-3071|^43-5011|^43-5071|^53-1047") ~ "Transportation & Logistics",
+      str_detect(occupation_code, "^13-1081") ~ "Supply Chain Planning",
+      str_detect(occupation_code, "^43-5061") ~ "Production Planning", 
+      str_detect(occupation_code, "^13-1199") ~ "Supply Chain Analysis",
+      str_detect(occupation_code, "^13-1111|^15-2031|^17-2112") ~ "Process Optimization",
+      str_detect(occupation_code, "^11-9199|^11-1011") ~ "General Operations",
+      TRUE ~ "Other SCM Functions"
+    ),
+    median_hourly_current = median_wage / 2080,
+    mean_hourly_current = mean_wage / 2080,
+    annual_salary_growth = median_10yr_change / (latest_year - earliest_year),
+    compound_annual_growth_rate = ((latest_median / earliest_median)^(1/(latest_year - earliest_year)) - 1) * 100
+  ) %>%
   select(
-    Rank = rank,
-    `Job Title` = job_title,
-    `SOC Code` = soc_code,
-    `Current Salary` = salary,
-    `Start Year` = start_year,
-    `Starting Salary` = start_salary,
-    `End Year` = end_year,
-    `Salary Change ($)` = salary_change,
-    `Percent Change (%)` = percent_change,
-    `Annual Growth Rate (%)` = annual_growth_rate
+    rank, occupation_code, occupation_name, occupation_level, scm_function,
+    employment, median_wage, mean_wage, median_hourly_current, mean_hourly_current,
+    earliest_year, earliest_median, latest_year, latest_median,
+    median_10yr_change, median_10yr_pct_change, annual_salary_growth, compound_annual_growth_rate,
+    earliest_employment, latest_employment, employment_10yr_change, employment_10yr_pct_change,
+    years_with_data
+  )
+
+# ==========================================
+# CREATE SORTABLE/FILTERABLE OUTPUTS
+# ==========================================
+
+# Create output directory
+if(!dir.exists("output")) dir.create("output")
+
+# 1. Excel file with multiple sheets
+wb <- createWorkbook()
+
+# Sheet 1: Top 20 Current Rankings
+addWorksheet(wb, "Top 20 SCM Positions 2024")
+writeData(wb, "Top 20 SCM Positions 2024", comprehensive_dataset)
+
+# Add formatting
+headerStyle <- createStyle(textDecoration = "bold", fgFill = "#4472C4", fontColour = "white")
+addStyle(wb, "Top 20 SCM Positions 2024", headerStyle, rows = 1, cols = 1:ncol(comprehensive_dataset))
+
+# Sheet 2: Historical Data (All Years)
+historical_long <- historical_data %>%
+  filter(occupation_code %in% top_20_codes, data_available == TRUE) %>%
+  arrange(occupation_code, year)
+
+addWorksheet(wb, "Historical Data All Years")
+writeData(wb, "Historical Data All Years", historical_long)
+addStyle(wb, "Historical Data All Years", headerStyle, rows = 1, cols = 1:ncol(historical_long))
+
+# Sheet 3: Summary Statistics
+summary_stats <- comprehensive_dataset %>%
+  group_by(occupation_level) %>%
+  summarise(
+    count = n(),
+    avg_median_wage = mean(median_wage, na.rm = TRUE),
+    avg_10yr_growth = mean(median_10yr_pct_change, na.rm = TRUE),
+    total_employment = sum(employment, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+addWorksheet(wb, "Summary by Level")
+writeData(wb, "Summary by Level", summary_stats)
+addStyle(wb, "Summary by Level", headerStyle, rows = 1, cols = 1:ncol(summary_stats))
+
+# Save Excel file
+excel_filename <- paste0("output/Top_20_SCM_Salaries_Analysis_", current_year, ".xlsx")
+saveWorkbook(wb, excel_filename, overwrite = TRUE)
+
+# 2. Create interactive HTML table
+create_interactive_table <- function(data, filename) {
+  # Create DT datatable
+  dt <- datatable(
+    data,
+    options = list(
+      pageLength = 20,
+      scrollX = TRUE,
+      searchHighlight = TRUE,
+      dom = 'Bfrtip',
+      buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+      columnDefs = list(
+        list(targets = c(5, 6, 7, 8, 9, 12, 13, 16, 17), render = JS(
+          "function(data, type, row, meta) {",
+          "return type === 'display' && data != null ? '$' + data.toString().replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',') : data;",
+          "}"
+        )),
+        list(targets = c(14, 15, 18, 19, 21), render = JS(
+          "function(data, type, row, meta) {",
+          "return type === 'display' && data != null ? data.toFixed(1) + '%' : data;",
+          "}"
+        ))
+      )
+    ),
+    extensions = 'Buttons',
+    filter = 'top',
+    caption = paste0('Top 20 SCM Positions - Salary Analysis ', current_year),
+    class = 'cell-border stripe hover'
   ) %>%
-  mutate(
-    `Current Salary` = scales::dollar(`Current Salary`),
-    `Starting Salary` = scales::dollar(`Starting Salary`),
-    `Salary Change ($)` = scales::dollar(`Salary Change ($)`)
-  )
+    formatCurrency(c('employment', 'median_wage', 'mean_wage', 'median_hourly_current', 
+                     'mean_hourly_current', 'earliest_median', 'latest_median', 
+                     'median_10yr_change', 'annual_salary_growth', 'earliest_employment', 
+                     'latest_employment', 'employment_10yr_change'), digits = 0) %>%
+    formatPercentage(c('median_10yr_pct_change', 'employment_10yr_pct_change', 
+                       'compound_annual_growth_rate'), digits = 1)
+  
+  # Save as HTML
+  html_filename <- paste0("output/", filename, ".html")
+  saveWidget(dt, html_filename, selfcontained = TRUE)
+  
+  return(dt)
+}
 
-# Display results
-cat("Top 20 Supply Chain Management Positions by Salary\n")
-cat("=================================================\n\n")
+# Create interactive table
+interactive_table <- create_interactive_table(comprehensive_dataset, "Interactive_Top_20_SCM_Salaries")
 
-print(final_data)
+# 3. CSV files for easy import
+write_csv(comprehensive_dataset, paste0("output/top_20_scm_positions_", current_year, ".csv"))
+write_csv(historical_long, paste0("output/scm_historical_data_", current_year, ".csv"))
+write_csv(summary_stats, paste0("output/scm_summary_by_level_", current_year, ".csv"))
 
-# Create interactive sortable/filterable table
-interactive_table <- DT::datatable(
-  final_data,
-  options = list(
-    pageLength = 20,
-    scrollX = TRUE,
-    order = list(list(0, 'asc')),  # Sort by rank initially
-    columnDefs = list(
-      list(className = 'dt-center', targets = c(0, 2, 4, 6, 8, 9)),
-      list(className = 'dt-right', targets = c(3, 5, 7))
-    )
-  ),
-  caption = "Supply Chain Management Positions - Top 20 Salaries (Sortable & Filterable)",
-  filter = 'top',
-  rownames = FALSE
-) %>%
-  DT::formatStyle(
-    'Rank',
-    backgroundColor = DT::styleInterval(c(5, 10), c('#d4edda', '#fff3cd', '#f8d7da'))
-  )
+# ==========================================
+# FINAL REPORTING
+# ==========================================
 
-print(interactive_table)
+cat("\n", paste(rep("=", 70), collapse=""), "\n")
+cat("ANALYSIS COMPLETE - FILES CREATED:\n")
+cat(paste(rep("=", 70), collapse=""), "\n")
 
-# Create salary trend visualization
-trend_plot <- salary_data_complete %>%
-  filter(soc_code %in% current_year_data$soc_code[1:10]) %>%  # Top 10 for readability
-  ggplot(aes(x = year, y = salary, color = job_title)) +
-  geom_line(size = 1.2) +
-  geom_point(size = 2) +
-  scale_y_continuous(labels = scales::dollar_format()) +
-  labs(
-    title = "Salary Trends for Top 10 Supply Chain Management Positions",
-    subtitle = "Based on BLS Occupational Employment Statistics",
-    x = "Year",
-    y = "Annual Salary",
-    color = "Position"
-  ) +
-  theme_minimal() +
-  theme(
-    legend.position = "bottom",
-    legend.title = element_blank(),
-    plot.title = element_text(size = 14, face = "bold"),
-    axis.text.x = element_text(angle = 45, hjust = 1)
-  ) +
-  guides(color = guide_legend(nrow = 5))
+cat("📊 INTERACTIVE OUTPUTS:\n")
+cat("  • Interactive_Top_20_SCM_Salaries.html - Sortable/filterable web table\n")
+cat("  • Top_20_SCM_Salaries_Analysis_", current_year, ".xlsx - Excel with multiple sheets\n\n")
 
-print(trend_plot)
+cat("📁 CSV FILES:\n")
+cat("  • top_20_scm_positions_", current_year, ".csv - Main analysis results\n")
+cat("  • scm_historical_data_", current_year, ".csv - All historical data\n")
+cat("  • scm_summary_by_level_", current_year, ".csv - Summary statistics\n\n")
 
-# Make it interactive with plotly
-interactive_plot <- ggplotly(trend_plot, tooltip = c("x", "y", "colour"))
-print(interactive_plot)
+cat("🎯 KEY INSIGHTS:\n")
+top_position <- comprehensive_dataset[1, ]
+cat("  • Highest paying SCM position:", top_position$occupation_name, "\n")
+cat("  • Top salary:", dollar(top_position$median_wage), "median\n")
+cat("  • Best 10-year growth:", 
+    comprehensive_dataset$occupation_name[which.max(comprehensive_dataset$median_10yr_pct_change)], 
+    sprintf("(%.1f%%)\n", max(comprehensive_dataset$median_10yr_pct_change, na.rm = TRUE)))
 
-# Summary statistics
-cat("\n\nSummary Statistics\n")
-cat("==================\n")
-cat("Average salary (current year):", scales::dollar(mean(current_year_data$salary)), "\n")
-cat("Median salary (current year):", scales::dollar(median(current_year_data$salary)), "\n")
-cat("Highest salary:", scales::dollar(max(current_year_data$salary)), "\n")
-cat("Lowest salary:", scales::dollar(min(current_year_data$salary)), "\n")
-cat("Average annual growth rate:", paste0(round(mean(salary_changes$annual_growth_rate, na.rm = TRUE), 1), "%"), "\n")
+total_scm_employment <- sum(comprehensive_dataset$employment, na.rm = TRUE)
+cat("  • Total employment in top 20:", comma(total_scm_employment), "positions\n")
 
-# Export data to CSV for further analysis
-write_csv(final_data, "scm_salary_analysis.csv")
-write_csv(salary_data_complete, "scm_salary_historical_data.csv")
+avg_growth <- mean(comprehensive_dataset$median_10yr_pct_change, na.rm = TRUE)
+cat("  • Average 10-year salary growth:", sprintf("%.1f%%\n", avg_growth))
 
-cat("\nData exported to:\n")
-cat("- scm_salary_analysis.csv (summary table)\n") 
-cat("- scm_salary_historical_data.csv (complete historical data)\n")
-
-cat("\nAnalysis complete! The interactive table above allows you to:\n")
-cat("- Sort by any column by clicking the column header\n")
-cat("- Filter data using the search boxes at the top of each column\n")
-cat("- Search across all data using the main search box\n")
-cat("- Export filtered results using the buttons above the table\n")
+cat("\n✅ Open the HTML file in your browser for interactive sorting and filtering!\n")
+cat("✅ Use the Excel file for detailed analysis and pivot tables!\n")
