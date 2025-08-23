@@ -14,7 +14,7 @@ library(DT)
 library(htmlwidgets)
 
 # Load API key from config file
-#source("config.R")
+source("config.R")
 
 # Verify API key
 if(Sys.getenv("BLS_KEY") == "") {
@@ -310,13 +310,22 @@ trend_analysis <- historical_data %>%
     latest_year = max(year, na.rm = TRUE),
     earliest_median = first(median_wage[order(year)], na_rm = TRUE),
     latest_median = last(median_wage[order(year)], na_rm = TRUE),
-    median_10yr_change = latest_median - earliest_median,
-    median_10yr_pct_change = ((latest_median / earliest_median) - 1) * 100,
+    median_10yr_change = ifelse(is.na(latest_median) | is.na(earliest_median), 
+                                NA, latest_median - earliest_median),
+    median_10yr_pct_change = ifelse(is.na(latest_median) | is.na(earliest_median) | earliest_median == 0, 
+                                    NA, ((latest_median / earliest_median) - 1) * 100),
     earliest_employment = first(employment[order(year)], na_rm = TRUE),
     latest_employment = last(employment[order(year)], na_rm = TRUE),
-    employment_10yr_change = latest_employment - earliest_employment,
-    employment_10yr_pct_change = ((latest_employment / earliest_employment) - 1) * 100,
+    employment_10yr_change = ifelse(is.na(latest_employment) | is.na(earliest_employment), 
+                                    NA, latest_employment - earliest_employment),
+    employment_10yr_pct_change = ifelse(is.na(latest_employment) | is.na(earliest_employment) | earliest_employment == 0, 
+                                        NA, ((latest_employment / earliest_employment) - 1) * 100),
     .groups = 'drop'
+  ) %>%
+  # Ensure all numeric columns are actually numeric
+  mutate(
+    across(c(median_10yr_change, median_10yr_pct_change, employment_10yr_change, employment_10yr_pct_change), 
+           ~as.numeric(.))
   ) %>%
   arrange(desc(latest_median))
 
@@ -325,15 +334,24 @@ cat(paste(rep("=", 70), collapse=""), "\n")
 
 for(i in 1:nrow(trend_analysis)) {
   trend <- trend_analysis[i, ]
+  
+  # Handle NA values safely
+  pct_change <- ifelse(is.na(trend$median_10yr_pct_change), 0, trend$median_10yr_pct_change)
+  emp_pct_change <- ifelse(is.na(trend$employment_10yr_pct_change), 0, trend$employment_10yr_pct_change)
+  earliest_median <- ifelse(is.na(trend$earliest_median), 0, trend$earliest_median)
+  latest_median <- ifelse(is.na(trend$latest_median), 0, trend$latest_median)
+  earliest_employment <- ifelse(is.na(trend$earliest_employment), 0, trend$earliest_employment)
+  latest_employment <- ifelse(is.na(trend$latest_employment), 0, trend$latest_employment)
+  
   cat(sprintf("%2d. %s\n", i, trend$occupation_name))
   cat(sprintf("    %d Median: %s → %s (%+.1f%% over %d years)\n", 
-              trend$earliest_year, dollar(trend$earliest_median),
-              trend$latest_year, dollar(trend$latest_median),
-              trend$median_10yr_pct_change, 
+              trend$earliest_year, dollar(earliest_median),
+              trend$latest_year, dollar(latest_median),
+              pct_change, 
               trend$latest_year - trend$earliest_year))
   cat(sprintf("    Employment: %s → %s (%+.1f%%)\n\n", 
-              comma(trend$earliest_employment), comma(trend$latest_employment),
-              trend$employment_10yr_pct_change))
+              comma(earliest_employment), comma(latest_employment),
+              emp_pct_change))
 }
 
 # ==========================================
@@ -365,7 +383,10 @@ comprehensive_dataset <- top_20_positions %>%
     median_hourly_current = median_wage / 2080,
     mean_hourly_current = mean_wage / 2080,
     annual_salary_growth = median_10yr_change / (latest_year - earliest_year),
-    compound_annual_growth_rate = ((latest_median / earliest_median)^(1/(latest_year - earliest_year)) - 1) * 100
+    compound_annual_growth_rate = ifelse(is.na(latest_median) | is.na(earliest_median) | 
+                                           earliest_median == 0 | (latest_year - earliest_year) == 0,
+                                         NA, 
+                                         ((latest_median / earliest_median)^(1/(latest_year - earliest_year)) - 1) * 100)
   ) %>%
   select(
     rank, occupation_code, occupation_name, occupation_level, scm_function,
@@ -495,14 +516,17 @@ top_position <- comprehensive_dataset[1, ]
 cat("  • Highest paying SCM position:", top_position$occupation_name, "\n")
 cat("  • Top salary:", dollar(top_position$median_wage), "median\n")
 cat("  • Best 10-year growth:", 
-    comprehensive_dataset$occupation_name[which.max(comprehensive_dataset$median_10yr_pct_change)], 
-    sprintf("(%.1f%%)\n", max(comprehensive_dataset$median_10yr_pct_change, na.rm = TRUE)))
+    ifelse(all(is.na(comprehensive_dataset$median_10yr_pct_change)), 
+           "Data not available",
+           paste0(comprehensive_dataset$occupation_name[which.max(comprehensive_dataset$median_10yr_pct_change)], 
+                  sprintf(" (%.1f%%)", max(comprehensive_dataset$median_10yr_pct_change, na.rm = TRUE)))), "\n")
 
 total_scm_employment <- sum(comprehensive_dataset$employment, na.rm = TRUE)
 cat("  • Total employment in top 20:", comma(total_scm_employment), "positions\n")
 
 avg_growth <- mean(comprehensive_dataset$median_10yr_pct_change, na.rm = TRUE)
-cat("  • Average 10-year salary growth:", sprintf("%.1f%%\n", avg_growth))
+cat("  • Average 10-year salary growth:", 
+    ifelse(is.nan(avg_growth) | is.na(avg_growth), "Data not available", sprintf("%.1f%%", avg_growth)), "\n")
 
 cat("\n✅ Open the HTML file in your browser for interactive sorting and filtering!\n")
 cat("✅ Use the Excel file for detailed analysis and pivot tables!\n")
