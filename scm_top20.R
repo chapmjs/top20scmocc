@@ -14,7 +14,7 @@ library(DT)
 library(htmlwidgets)
 
 # Load API key from config file
-source("config.R")
+#source("config.R")
 
 # Verify API key
 if(Sys.getenv("BLS_KEY") == "") {
