@@ -33,19 +33,44 @@ scm_occupations <- list(
   "531047" = "Traffic Technicians"
 )
 
-# Years to analyze (BLS has data back to 1997, but let's focus on recent decade)
-years_to_analyze <- 2014:2024
+# Years to analyze (start with recent years, then expand if working)
+years_to_analyze <- c(2024, 2023, 2022, 2021, 2020)  # Start with 5 years
 current_year <- 2024
 
 # ==========================================
 # OEWS FILE DOWNLOAD FUNCTIONS
 # ==========================================
 
-# BLS OEWS file URLs (these are the actual files BLS publishes)
+# Test function to verify URLs are accessible
+test_oews_urls <- function(years_to_test = c(2024, 2023, 2022)) {
+  
+  cat("🧪 TESTING OEWS URLS\n")
+  cat(paste(rep("=", 40), collapse = ""), "\n")
+  
+  for(year in years_to_test) {
+    url <- get_oews_url(year)
+    cat(sprintf("Testing %d: %s... ", year, url))
+    
+    tryCatch({
+      # Try to get headers to check if URL exists
+      response <- HEAD(url)
+      if(response$status_code == 200) {
+        cat("✅ OK\n")
+      } else {
+        cat(sprintf("❌ Status %d\n", response$status_code))
+      }
+    }, error = function(e) {
+      cat("❌ Error\n")
+    })
+  }
+  cat("\n")
+}
+
+# BLS OEWS file URLs (corrected based on actual BLS structure)
 get_oews_url <- function(year) {
   if(year >= 2012) {
-    # Format: https://www.bls.gov/oes/special-requests/oesm[YY]nat.zip
-    year_short <- substr(as.character(year), 3, 4)
+    # Correct format: https://www.bls.gov/oes/special-requests/oesm[YY]nat.zip
+    year_short <- sprintf("%02d", year %% 100)  # Ensure 2-digit format
     return(paste0("https://www.bls.gov/oes/special-requests/oesm", year_short, "nat.zip"))
   } else {
     return(NULL)
@@ -283,6 +308,9 @@ create_trend_analysis <- function(data, top_20) {
 cat("🚀 STARTING SCM SALARY ANALYSIS\n")
 cat("Using BLS OEWS files (the method that actually works!)\n")
 cat(paste(rep("=", 60), collapse = ""), "\n")
+
+# Step 0: Test URLs first
+test_oews_urls(years_to_analyze)
 
 # Step 1: Collect all historical data
 historical_data <- collect_historical_data(years_to_analyze, scm_occupations)
